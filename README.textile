@@ -16,7 +16,7 @@ python popbak.py -u example@gmail.com -p PASSWORD -s pop.gmail.com -o 995
 
 "make sure you have activated pop access on your gmail account": http://mail.google.com/support/bin/answer.py?answer=13273&topic=12890
 
-questions, comments, fanmail goes to jay@marcyes.com
+questions, comments, fanmail goes to popbak@marcyes.com
 
 license: "LGPL":http://www.gnu.org/copyleft/lesser.html
 
