@@ -1,9 +1,15 @@
-'''
-from: http:///lab.noopsi.com/popbak/
-questions, comments, fanmail goes to lab@noopsi.com
-license: LGPL - http://www.gnu.org/copyleft/lesser.html
-'''
+"""
+Popbak makes it easy to back up a POP accessible email in box
 
+The email parsing portion of the code is based on code that I got from Larry Bates here:
+http://mail.python.org/pipermail/python-list/2004-June/265634.html
+
+author -- Jay Marcyes <jay@marcyes.com>
+
+todo -- this script is like 6 years old now and so there are some naming problems (eg, I used camelCase
+    method names, some indents are 2 spaces, others 4) that I need to clean up,
+    I went through and fixed some of the issues, but not all, I'm just happy it still works after all this time
+"""
 
 import poplib
 import email
@@ -14,16 +20,42 @@ import errno
 import mimetypes
 import re
 import time
-import optparse
 from datetime import date
 from types import *
 
-"""
-This is based on code that I got from Larry Bates here:
-http://mail.python.org/pipermail/python-list/2004-June/265634.html
-"""
+class Echo(object):
+    """
+    simple class that wraps print, why? so I can handle verbosity levels in one place
+    """
 
-class email_attachment:
+    verbosity = 0
+
+    @classmethod
+    def stdout(cls, format_msg, *args, **kwargs):
+        '''
+        print format_msg to stdout, taking into account verbosity level
+        '''
+        if not cls.verbosity: return
+        print format_msg.format(*args)
+        return
+
+    @classmethod
+    def stderr(cls, format_msg, *args, **kwargs):
+        '''
+        print format_msg to stderr
+        '''
+        sys.stderr.write("{}\n".format(format_msg.format(*args)))
+        sys.stderr.flush()
+        return
+
+    @classmethod
+    def err(cls, e):
+        '''
+        print an exception message to stderr
+        '''
+        cls.sdterr(e.message)
+
+class EmailAttachment:
     def __init__(self, messagenum, attachmentnum, filename, contents):
         '''
         arguments:
@@ -33,10 +65,10 @@ class email_attachment:
         filename - filename for this attachment
         contents - attachment's contents
         '''
-        self.messagenum=messagenum
-        self.attachmentnum=attachmentnum
-        self.filename=filename
-        self.contents=contents
+        self.messagenum = messagenum
+        self.attachmentnum = attachmentnum
+        self.filename = filename
+        self.contents = contents
         return
 
     def save(self, savepath, savefilename=None):
@@ -48,7 +80,7 @@ class email_attachment:
         safefilename - optional name (if None will use filename of attachment
         '''
 
-        savefilename=savefilename or self.filename
+        savefilename = savefilename or self.filename
         
         if self.contents:
           attached_file = os.path.join(savepath, savefilename)
@@ -57,16 +89,12 @@ class email_attachment:
             f.write(self.contents)
             f.close()
           except IOError, e:
-            print "Could not save %s: IO error(%s): %s, moving on..." % (attached_file,e.errno, e.strerror)
+            Echo.stderr("Could not save {}: IO error({}): {}, moving on...", attached_file, e.errno, e.strerror)
           except:
-            print "Could not save (%s), moving on..." % attached_file
+            Echo.stderr("Could not save ({}), moving on...", attached_file)
         return
 
-
-
-
-
-class email_msg:
+class EmailMsg:
     def __init__(self, messagenum, contents):
         self.messagenum=messagenum
         self.contents=contents
@@ -88,8 +116,8 @@ class email_msg:
                 if mptype == "multipart": continue
                 if filename: # Attached object with filename
                     attachmentnum+=1
-                    self.ATTACHMENTS.append(email_attachment(messagenum,attachmentnum,filename,part.get_payload(decode=1)))
-                    print "Attachment filename=%s" % filename.encode("utf-8")
+                    self.ATTACHMENTS.append(EmailAttachment(messagenum,attachmentnum,filename,part.get_payload(decode=1)))
+                    Echo.stdout("Attachment filename = {}", filename.encode("utf-8"))
 
                 else: # Must be body portion of multipart
                     self.body_text=part.get_payload()
@@ -105,7 +133,7 @@ class email_msg:
         return to_email
       except:
         emsg="email_msg-Unable to extract to email address"
-        print emsg
+        Echo.stderr(emsg)
         #sys.exit(emsg)
         return ""
     
@@ -114,7 +142,7 @@ class email_msg:
         return self.msg.get('To')
       except:
         emsg="email_msg-Unable to get to header"
-        print emsg
+        Echo.stderr(emsg)
         #sys.exit(emsg)
         return ""
             
@@ -125,7 +153,7 @@ class email_msg:
           return from_email
         except:
             emsg="email_msg-Unable extract from email address"
-            print emsg
+            Echo.stderr(emsg)
             #sys.exit(emsg)
             return ""
             
@@ -134,7 +162,7 @@ class email_msg:
         return self.msg.get('From')
       except:
           emsg="email_msg-Unable to get from header"
-          print emsg
+          Echo.stderr(emsg)
           #sys.exit(emsg)
           return ""
     
@@ -142,7 +170,7 @@ class email_msg:
         try: return self.msg.get('Date')
         except:
             emsg="email_msg-Unable to get Date information"
-            print emsg
+            Echo.stderr(emsg)
             #sys.exit(emsg)
             return ""
             
@@ -155,7 +183,7 @@ class email_msg:
         try: return self.msg.get('Content-type')
         except:
             emsg="email_msg-Unable to get Content-type information"
-            print emsg
+            Echo.stderr(emsg)
             #sys.exit(emsg)
             return ""
 
@@ -176,7 +204,7 @@ class email_msg:
             return "blank_subject_%s" % re.sub("[^a-zA-Z0-9@(+)_-]*","-",self.date())
         except:
             emsg="email_msg-Unable to get email subject information"
-            print emsg
+            Echo.stderr(emsg)
             #sys.exit(emsg)
             return ""
 
@@ -184,7 +212,7 @@ class email_msg:
         try: return self.msg.get(key)
         except:
             emsg="email_msg-Unable to get email key=%s information" % key
-            print emsg
+            Echo.stderr(emsg)
             #sys.exit(emsg)
             return ""
 
@@ -244,7 +272,7 @@ class email_msg:
           acounter=0
           for a in self:
               acounter+=1
-              print "saving: %i: %s in %s" % (acounter, a.filename.encode("utf-8"), filepath)
+              Echo.stdout("saving: {}: {} in {}", acounter, a.filename.encode("utf-8"), filepath)
               a.save(filepath)
         except OSError, e:
           # Ignore directory exists error
@@ -263,56 +291,45 @@ class email_msg:
         
         fp.close()
       except IOError, e:
-        print "Could not save %s: IO error(%s): %s, moving on..." % (attached_file,e.errno, e.strerror)
+        Echo.stderr("Could not save {}: IO error({}): {}, moving on...", attached_file, e.errno, e.strerror)
       except:
-        print "Could not save email body in %s, moving on..." % filepath
-        
+        Echo.stderr("Could not save email body in {}, moving on...", filepath)
+
       return
         
 
-
-
-
-class pop3_inbox:
+class Pop3Inbox:
     def __init__(self, server, port, userid, password):
-        self._trace=1
-        if self._trace: print "pop3_inbox.__init__-Entering"
         self.result=0             # Result of server communication
         self.MESSAGES=[]          # List for storing message objects
         self.messages_index=0     # Index of message for next method
         
-        print "%s, %d, %s, %s\r\n" % (server,port,userid,password)
+        Echo.stdout("Entering")
+        Echo.stdout("{}, {}, {}, {}".format(server, port, userid, password))
         
-        #
         # See if I can connect using information provided
-        #
         try:
-            if self._trace: print "pop3_inbox.__init__-Calling poplib.POP3_SSL(server,port)"
+            Echo.stdout("Calling poplib.POP3_SSL(server, port)")
             self.connection=poplib.POP3_SSL(server,port)
-            if self._trace: print "pop3_inbox.__init__-Calling connection.user(userid)"
+            Echo.stdout("Calling connection.user(userid)")
             self.connection.user(userid)
-            if self._trace: print "pop3_inbox.__init__-Calling connection.pass_(password)"
+            Echo.stdout("Calling connection.pass_(password)")
             self.connection.pass_(password)
 
-        except:
-            if self._trace: print "pop3_inbox.__init__-Login failure, closing connection"
-            self.result=1
-            if self.connection:
-              self.connection.quit()
+        except Exception, e:
+            if self.connection: self.connection.quit()
+            raise e
 
-        #
         # Get count of messages and size of mailbox
-        #
-        if self._trace: print "pop3_inbox.__init__-Calling connection.stat()"
+        Echo.stdout("Calling connection.stat()")
         self.msgcount, self.size=self.connection.stat()
-        if self._trace: print "msgcount: %d, size: %d" % (self.msgcount,self.size)
-        #
-        # Loop over all the messages processing each one in turn
-        #
-        for msgnum in range(1, self.msgcount+1):
-            self.MESSAGES.append(email_msg(msgnum,self.connection.retr(msgnum)))
+        Echo.stdout("msgcount: {}, size: {}", self.msgcount, self.size)
 
-        if self._trace: print "pop3_inbox.__init__-Leaving"
+        # Loop over all the messages processing each one in turn
+        for msgnum in range(1, self.msgcount+1):
+            self.MESSAGES.append(EmailMsg(msgnum,self.connection.retr(msgnum)))
+
+        Echo.stdout("Leaving")
         return
 
     def close(self):
@@ -323,9 +340,7 @@ class pop3_inbox:
         if isinstance(msgnumorlist, int): self.connection.dele(msgnumorlist)
         elif isinstance(msgnumorlist, (list, tuple)): map(self.connection.dele, msgnumorlist)
         else:
-            emsg="pop3_inbox.remove-msgnumorlist must be type int, list, or tuple, not %s" % type(msgnumorlist)
-            print emsg
-            sys.exit(emsg)
+            raise RuntimeError("remove - msgnumorlist must be type int, list, or tuple, not {}".format(type(msgnumorlist)))
 
         return
 
@@ -333,65 +348,70 @@ class pop3_inbox:
         return self
 
     def next(self):
-        #
         # Try to get the next attachment
-        #
         try: MESSAGE=self.MESSAGES[self.messages_index]
         except:
             self.messages_index=0
-            raise StopIteration
-        #
+            raise StopIteration()
         # Increment the index pointer for the next call
-        #
         self.messages_index+=1
         return MESSAGE
 
-if __name__=="__main__":
-    
-    parser = optparse.OptionParser(usage="%prog -un \"username\" -pw \"password\" -s \"server\" -o \"port\"", version="%prog 0.2")
-    parser.add_option("-u", "--username", dest="userid", default="", help="Your email username (eg, username@example.com)")
-    parser.add_option("-p", "--password", dest="password", default="", help="Your email password")
-    parser.add_option("-s", "--server", dest="server", default="pop.gmail.com", help="The server you want to connect to")
-    parser.add_option("-o", "--port", dest="port", default=995, help="The port you want to connect to")
-    (options, args) = parser.parse_args()
-    
-    folder = "%s_%s" % (date.today(),userid)
+if __name__ == "__main__":
+
+    import argparse
+    # http://docs.python.org/library/argparse.html#module-argparse
+    parser = argparse.ArgumentParser(description='Easily backup a POP accessible email account')
+    parser.add_argument("-u", "--username", dest="userid", default="", help="Your email username (eg, username@example.com)")
+    parser.add_argument("-p", "--password", dest="password", default="", help="Your email password")
+    parser.add_argument("-s", "--server", dest="server", default="pop.gmail.com", help="The server you want to connect to")
+    parser.add_argument("-o", "--port", dest="port", default=995, type=int, help="The port you want to connect to")
+    parser.add_argument("-v", "--verbose", dest="verbosity", action='count', help="the verbosity level, more v's, more output")
+    parser.add_argument("--version", action='version', version="%(prog)s 0.3")
+    parser.add_argument("-d", "--dir", dest="dir", default=date.today(), help="the directory to backup to")
+
+    options = parser.parse_args()
+    total = 0
+    Echo.verbosity = options.verbosity
     
     while 1:
       
-      print "CONNECTING"
-      
-      inbox=pop3_inbox(options.server, options.port, options.userid, options.password)
-      if inbox.result:
-          emsg="Failure connecting to pop3_inbox"
-          print emsg
-          sys.exit(emsg)
+        Echo.stdout("CONNECTING")
+
+        try:
+            inbox=Pop3Inbox(options.server, options.port, options.userid, options.password)
+
+        except Exception, e:
+            Echo.err(e)
+            sys.exit(2)
+
+        Echo.stdout("Message count={}, Inbox size={}", inbox.msgcount, inbox.size)
+
+        if not inbox.msgcount:
+            inbox.close()
+            break
   
-      print "Message count=%i, Inbox size=%i" % (inbox.msgcount, inbox.size)
-      
-      if not inbox.msgcount:
-        inbox.close()
-        break
+        counter = 0
+        for m in inbox:
+            counter += 1
+            total += 1
+            
+            #print "To: %s" % m.toEmail()
+            #print "From: %s" % m.fromEmail()
+            #print "Content-Type: %s" % m.contentType()
+            #print "Subject: %s" % m.subject()
+            #print "-------------Message (%i) body lines---------------" % counter
+            #print m.body()
+            #print "-------------End message (%i) body lines-----------" % counter
+            
+            Echo.stdout("saving ({}) {}", total, m.subject())
+            m.save(options.dir)
   
-      counter=0
-      for m in inbox:
-          counter+=1
-          '''
-          print "To: %s" % m.toEmail()
-          print "From: %s" % m.fromEmail()
-          print "Content-Type: %s" % m.contentType()
-          print "Subject: %s" % m.subject()
-          print "-------------Message (%i) body lines---------------" % counter
-          #print m.body()
-          print "-------------End message (%i) body lines-----------" % counter
-          '''
-          print "saving (%i) %s" % (counter,m.subject())
-          m.save(folder)
-  
-      # uncomment if I want to delete the messages, though this is a backup script, so
-      # why would I want to?
-      #if inbox.msgcount: inbox.remove(range(1, inbox.msgcount+1))
-      
-      inbox.close() # close the connection
-      print "Resting for 5 seconds before reconnecting to check for more messages."
-      time.sleep(5)
+        # uncomment if I want to delete the messages, though this is a backup script, so
+        # why would I want to?
+        #if inbox.msgcount: inbox.remove(range(1, inbox.msgcount+1))
+
+        inbox.close() # close the connection
+        Echo.stdout("Resting for 5 seconds before reconnecting to check for more messages.")
+        time.sleep(5)
+
