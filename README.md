@@ -45,6 +45,14 @@ You could also install using git:
 
     $ git clone git@github.com:Jaymon/Popbak.git install/dir
 
+## Todo
+
+1 - it should detect html in the headers and set the extension to `.html` instead of `.txt`
+
+2 - I don't think it is handling writing out unicode very well
+
+3 - I should add a setup.py file so it can be installed with Pip and also so it will be available globally at `popbak`
+
 ## License
 
 MIT, do with this as you please, I'd love pull requests if you fix problems or make it better.
