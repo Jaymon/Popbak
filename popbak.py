@@ -53,7 +53,7 @@ class Echo(object):
         '''
         print an exception message to stderr
         '''
-        cls.sdterr(e.message)
+        cls.stderr(e.message)
 
 class EmailAttachment:
     def __init__(self, messagenum, attachmentnum, filename, contents):
