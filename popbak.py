@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Popbak makes it easy to back up a POP accessible email in box
+Popbak makes it easy to back up an IMAP accessible email in box
 """
 from __future__ import unicode_literals, division, print_function, absolute_import
 import poplib
@@ -9,175 +9,323 @@ import time
 import datetime
 import argparse
 import logging
+from contextlib import contextmanager # https://docs.python.org/3/library/contextlib.html
+import imaplib
 
 from datatypes import (
     Email,
     String,
     ByteString,
+    Dirpath,
 )
+from captain import Command, handle, arg, args
 
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 
-class Echo(object):
-    """simple class that wraps print, why? so I can handle verbosity levels in one place"""
-    verbosity = 0
+class Mailbox(object):
+    """Represents an IMAP mailbox"""
+    @classmethod
+    def imap_name(self, name):
+        """So I would rather have the name be like NAME but IMAP wants the name to
+        be "NAME" (wrapped in double quotes) so this takes the name and wraps it
+        so it can be used when making IMAP requests
 
-    def __init__(self, verbosity):
-        self.verbosity = verbosity
+        :param name: str, the mailbox name
+        :returns: str, the name in the format IMAP wants it to make a request
+        """
+        return f"\"{name}\""
 
-        #logging.basicConfig(format="[%(levelname).1s] %(message)s", level=logging.DEBUG, stream=sys.stdout)
-        log_formatter = logging.Formatter('%(message)s')
-        out_handler = logging.StreamHandler(stream=sys.stdout)
-        out_handler.setFormatter(log_formatter)
-        err_handler = logging.StreamHandler(stream=sys.stderr)
-        err_handler.setFormatter(log_formatter)
+    def __init__(self, raw):
+        """
+        :param raw: str, string in the form of: ([ATTRIBUTES]) "DELIM" "NAME"
+        """
+        # via: https://www.rfc-editor.org/rfc/rfc3501#section-7.2.2
+        # the list response is: (attributes) "delim" "name"
+        raw = String(raw)
+        m = raw.regex(r"^\(([^\)]*)\)\s+\"([^\"]*)\"\s+\"([^\"]*)\"$").match()
+        self.attributes = set(m.group(1).split(" "))
+        self.hierarchy_delim = m.group(2)
+        self.name = m.group(3)
 
-        outlogger = logging.getLogger("{}.out".format(__name__))
-        if len(outlogger.handlers) == 0:
-            outlogger.setLevel(logging.DEBUG)
-            outlogger.addHandler(out_handler)
-        self.outlogger = outlogger
+        self.count = 0
 
-        errlogger = logging.getLogger("{}.err".format(__name__))
-        if len(errlogger.handlers) == 0:
-            errlogger.setLevel(logging.DEBUG)
-            errlogger.addHandler(err_handler)
-        self.errlogger = errlogger
+    def is_selectable(self):
+        """Return True if this mailbox can be selected
 
-    def stdout(self, format_msg, *args, **kwargs):
-        '''print format_msg to stdout, taking into account verbosity level'''
-        if not self.verbosity: return
-        self.outlogger.info(format_msg.format(*args))
+        https://www.rfc-editor.org/rfc/rfc3501#section-7.2.2
 
-    def stderr(self, format_msg, *args, **kwargs):
-        '''print format_msg to stderr'''
-        self.errlogger.error(format_msg.format(*args))
+        from the docs:
 
-    def err(self, e):
-        '''print an exception message to stderr'''
-        self.errlogger.exception(e)
+            Noselect
+                It is not possible to use this name as a selectable mailbox.
+
+        :returns: bool
+        """
+        return "\\Noselect" not in self.attributes
+
+    def ids(self, limit, offset):
+        """Given a limit and/or offset return the ids that should be checked for
+        this mailbox
+
+        IMAP fetches email by a mail_id, this takes limit and offset and generates
+        the list of ids that should be checked
+
+        :param limit: int, at most, how many ids should be generated
+        :param offset: int, what id should be the start id
+        :returns: generator, all the mail ids between start_id and stop_id
+        """
+        start_id = offset or 1
+
+        if limit > 0:
+            stop_id = offset + limit - 1
+        else:
+            stop_id = self.count
+
+        if stop_id > self.count:
+            stop_id = self.count
+
+        for mail_id in range(start_id, stop_id + 1):
+            yield mail_id
 
 
-class Pop3Inbox(object):
-    def __init__(self, server, port, userid, password):
-        # See if I can connect using information provided
+class IMAP(object):
+    """Makes IMAP requests
+
+    * https://docs.python.org/3/library/imaplib.html
+    * https://coderzcolumn.com/tutorials/python/imaplib-simple-guide-to-manage-mailboxes-using-python
+    """
+    def __init__(self, server, port, username, password, **kwargs):
+        """
+        :param server: str, the host/server this IMAP connection should use
+        :param port: int, the port on the server to use
+        :param username: str, the username connecting to the server
+        :param password: str, the password for username
+        :param **kwargs: dict, any other things you want to pass
+        """
+        self.connection = None
         try:
-            self.connection = poplib.POP3_SSL(server, port)
-            self.connection.user(userid)
-            self.connection.pass_(password)
+            self.connection = imaplib.IMAP4_SSL(host=server, port=port)
+            self.connection.login(username, password)
 
-        except Exception as e:
+        except Exception:
             self.close()
             raise
 
-        # Get count of messages and size of mailbox
-        self.msgcount, self.size = self.connection.stat()
+    def __enter__(self):
+        """Makes this class a context manager so it's easier to cleanup"""
+        return self
+
+    def __exit__(self, exception_type, exception_val, trace):
+        """clean up when exiting the context of the IMAP connection
+
+        https://docs.python.org/3/reference/datamodel.html#context-managers
+            If the method wishes to suppress the exception (i.e., prevent it from
+            being propagated), it should return a true value. Otherwise, the exception
+            will be processed normally upon exit from this method.
+        """
+        self.close()
 
     def close(self):
+        """Closes and cleans up the connection"""
         if self.connection:
-            self.connection.quit()
+            try:
+                self.connection.close()
+
+            except imaplib.IMAP4.error as e:
+                # ignore any imap errors since we're trying to close everything
+                # out anyway
+                pass
+
+            self.connection.logout()
+
         self.connection = None
 
-    def remove(self, *msgnums):
-        """if I want to delete the messages, though this is a backup script, so
-        why would I want to?"""
-        raise NotImplementedError()
-        msgnums = map(int, msgnums)
-        map(self.connection.dele, msgnums)
+#     @contextmanager
+#     def cleanup(self):
+#         """Internal method that makes sure things get cleaned up if an exception
+#         is raised"""
+#         try:
+#             yield self
+# 
+#         except Exception:
+#             self.close()
+#             raise
 
-    def __iter__(self):
-        for msgnum in range(1, self.msgcount + 1):
-            msg = self.connection.retr(msgnum)
-            contents = '\n'.join(String(line) for line in msg[1])
-            msg = Email(contents)
-            yield msg
+    def mailboxes(self, mailbox_names=None):
+        """Return username's mailboxes on this IMAP server
+
+        :param mailbox_names: list, the mailboxes you are searching for
+        :returns: generator, yields the found mailboxes matching mailbox_names or
+            all mailboxes
+        """
+        #with self.cleanup():
+        with self:
+            if mailbox_names:
+                mailboxes = []
+                for mailbox_name in mailbox_names:
+                    resp_code, mbs = self.connection.list(pattern=Mailbox.imap_name(mailbox_name))
+                    mailboxes.extend(mbs)
+
+            else:
+                resp_code, mailboxes = self.connection.list()
+
+            for mailbox in mailboxes:
+                mb = Mailbox(mailbox)
+                if mb.is_selectable():
+                    yield self.select(mb)
+
+    def select(self, mailbox, readonly=True):
+        """Select this mailbox so you can read from it
+
+        :param mailbox: Mailbox, the mailbox you want to select, this will update
+            the mailbox instance with .count, representing how many messages the
+            mailbox has on the server
+        :param readonly: bool, True if you don't want to modify the mailbox but
+            only read from it
+        :returns: Mailbox
+        """
+        #with self.cleanup():
+        with self:
+            resp_code, mail_count = self.connection.select(mailbox=Mailbox.imap_name(mailbox.name), readonly=readonly)
+            mailbox.count = int(String(mail_count[0]))
+        return mailbox
+
+    def emails(self, mailbox, limit, offset):
+        """Retrieve emails for the given mailbox
+
+        :param mailbox: Mailbox, see .mailboxes()
+        :param limit: int, see Mailbox.ids()
+        :param offset: int, see Mailbox.ids()
+        :returns: generator<Email>
+        """
+        self.select(mailbox)
+
+        #with self.cleanup():
+        with self:
+            #resp_code, mail_ids = conn.search(None, "ALL")
+            #pout.v(mail_ids)
+            for mail_id in mailbox.ids(limit, offset):
+                resp_code, mail_data = self.connection.fetch(String(mail_id), '(RFC822)')
+                em = Email(mail_data[0][1])
+                em.id = mail_id
+                yield em
 
 
-if __name__ == "__main__":
-    # http://docs.python.org/library/argparse.html#module-argparse
-    parser = argparse.ArgumentParser(description='Easily backup a POP accessible email account')
-    parser.add_argument(
+class Mailboxes(Command):
+    """Retrieve all mailboxes username has access to and how many messages those
+    mailboxes contain"""
+    @arg(
         "-u", "--username", "--userid", "--user",
-        dest="userid",
-        help="Your email username (eg, username@example.com)"
+        dest="username",
+        help="Your email username (eg, username@example.com)",
+        group="IMAP Config",
     )
-    parser.add_argument(
+    @arg(
         "-p", "--password",
         dest="password",
-        help="Your email password"
+        help="Your email password",
+        group="IMAP Config",
     )
-    parser.add_argument(
-        "-s", "--server",
+    @arg(
+        "-s", "--server", "--host", "--hostname",
         dest="server",
-        default="pop.gmail.com",
-        help="The server you want to connect to"
+        default="imap.gmail.com",
+        help="The server you want to connect to",
+        group="IMAP Config",
     )
-    parser.add_argument(
+    @arg(
         "-o", "--port",
         dest="port",
-        default=995,
+        default=993,
         type=int,
-        help="The port you want to connect to"
+        help="The port you want to connect to",
+        group="IMAP Config",
     )
-    parser.add_argument(
-        "-v", "--verbose",
-        dest="verbosity",
-        action='count',
-        help="the verbosity level, more v's, more output"
+    @arg(
+        "mailboxes",
+        metavar="MAILBOX",
+        nargs="*",
+        dest="mailbox_names",
+        help="The mailboxes you would like information on"
     )
-    parser.add_argument(
-        "-V", "--version",
-        action='version',
-        version="%(prog)s {}".format(__version__)
-    )
-    parser.add_argument(
+    def handle(self, imap_config, mailbox_names):
+        with IMAP(imap_config.server, imap_config.port, imap_config.username, imap_config.password) as imap:
+            for mb in self.output.increment(imap.mailboxes(mailbox_names)):
+                s = "message" if mb.count == 1 else "messages"
+                attrs = " ".join(mb.attributes)
+                self.output.out(f"{mb.name} - {mb.count} {s} - Attributes: {attrs}")
+
+
+class Backup(Command):
+    """Backup mailboxes to the local filesystem
+
+    Each email will get its own directory with the message bodies and the attachments
+    """
+    @args(Mailboxes)
+    @arg(
         "-d", "--dir",
-        dest="dir",
+        dest="basedir",
         default=datetime.date.today(),
         help="the directory to backup to"
     )
-
-    options = parser.parse_args()
-    total = 0
-    echo = Echo(options.verbosity)
-    Echo.verbosity = options.verbosity
-
-    while True:
+    @arg(
+        "mailboxes",
+        metavar="MAILBOX",
+        nargs="+",
+        dest="mailbox_names",
+        help="The mailboxes you would like to backup"
+    )
+    @arg(
+        "--limit",
+        dest="limit",
+        default=0,
+        type=int,
+        help="How many messages you want to backup"
+    )
+    @arg(
+        "--offset",
+        dest="offset",
+        default=1,
+        type=int,
+        help="the message id (mail id) you want to start on"
+    )
+    @arg(
+        "--discard-originals",
+        dest="save_original",
+        action="store_false",
+        help="Pass this flag in to discard saving the full original message"
+    )
+    def handle(self, imap_config, mailbox_names, basedir, limit, offset, save_original):
+        mail_info = {}
         try:
-            echo.stdout(
-                "Connecting Pop3Inbox({}, {}, {}, {})".format(
-                    options.server,
-                    options.port,
-                    options.userid,
-                    options.password
-                )
-            )
+            with IMAP(imap_config.server, imap_config.port, imap_config.username, imap_config.password) as imap:
+                for mb in imap.mailboxes(mailbox_names):
+                    mail_info[mb.name] = 0
 
-            inbox = Pop3Inbox(options.server, options.port, options.userid, options.password)
+                    self.output.out("Backing up mailbox: {}", mb.name)
+
+                    for em in imap.emails(mb, limit, offset):
+                        self.output.out(
+                            "{}. Saving {} - {} - {}",
+                            em.id,
+                            em.from_addr,
+                            em.datetime.strftime("%Y-%m-%d"),
+                            em.subject
+                        )
+                        em.save(Dirpath(basedir, mb.name), save_original=save_original)
+                        mail_info[mb.name] = em.id
+
+
 
         except Exception as e:
-            echo.err(e)
-            sys.exit(2)
+            self.output.err(e)
 
-        else:
-            echo.stdout("Connected! Message count={}, Inbox size={}", inbox.msgcount, inbox.size)
+        self.output.out("Last mail_Ids successfully backed up for each mailbox")
+        self.output.table(mail_info.items())
 
-            if not inbox.msgcount:
-                inbox.close()
-                break
 
-            for counter, em in enumerate(inbox, 1):
-                try:
-                    total += 1
-                    echo.stdout("{}. Saving {} - {}", total, em.from_addr, em.subject_basename)
-                    em.save(options.dir)
-
-                except Exception as e:
-                    raise
-
-            inbox.close() # close the connection
-            echo.stdout("Resting for 5 seconds before reconnecting to check for more messages.")
-            time.sleep(5)
+if __name__ == "__main__":
+    handle()
 
