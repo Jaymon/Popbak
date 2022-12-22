@@ -25,7 +25,12 @@ __version__ = "0.6.0"
 
 
 class Mailbox(object):
-    """Represents an IMAP mailbox"""
+    """Represents an IMAP mailbox
+
+    list query and response docs:
+        * https://www.rfc-editor.org/rfc/rfc3501#section-6.3.8
+        * https://www.rfc-editor.org/rfc/rfc3501#section-7.2.2
+    """
     @classmethod
     def imap_name(self, name):
         """So I would rather have the name be like NAME but IMAP wants the name to
@@ -93,6 +98,7 @@ class Mailbox(object):
 class IMAP(object):
     """Makes IMAP requests
 
+    * https://www.rfc-editor.org/rfc/rfc3501
     * https://docs.python.org/3/library/imaplib.html
     * https://coderzcolumn.com/tutorials/python/imaplib-simple-guide-to-manage-mailboxes-using-python
     """
@@ -142,17 +148,6 @@ class IMAP(object):
 
         self.connection = None
 
-#     @contextmanager
-#     def cleanup(self):
-#         """Internal method that makes sure things get cleaned up if an exception
-#         is raised"""
-#         try:
-#             yield self
-# 
-#         except Exception:
-#             self.close()
-#             raise
-
     def mailboxes(self, mailbox_names=None):
         """Return username's mailboxes on this IMAP server
 
@@ -160,7 +155,6 @@ class IMAP(object):
         :returns: generator, yields the found mailboxes matching mailbox_names or
             all mailboxes
         """
-        #with self.cleanup():
         with self:
             if mailbox_names:
                 mailboxes = []
@@ -179,6 +173,8 @@ class IMAP(object):
     def select(self, mailbox, readonly=True):
         """Select this mailbox so you can read from it
 
+        https://www.rfc-editor.org/rfc/rfc3501#section-6.3.1
+
         :param mailbox: Mailbox, the mailbox you want to select, this will update
             the mailbox instance with .count, representing how many messages the
             mailbox has on the server
@@ -186,7 +182,6 @@ class IMAP(object):
             only read from it
         :returns: Mailbox
         """
-        #with self.cleanup():
         with self:
             resp_code, mail_count = self.connection.select(mailbox=Mailbox.imap_name(mailbox.name), readonly=readonly)
             mailbox.count = int(String(mail_count[0]))
@@ -202,7 +197,6 @@ class IMAP(object):
         """
         self.select(mailbox)
 
-        #with self.cleanup():
         with self:
             #resp_code, mail_ids = conn.search(None, "ALL")
             #pout.v(mail_ids)
@@ -214,8 +208,7 @@ class IMAP(object):
 
 
 class Mailboxes(Command):
-    """Retrieve all mailboxes username has access to and how many messages those
-    mailboxes contain"""
+    """Retrieve all username's mailboxes and how many messages those mailboxes contain"""
     @arg(
         "-u", "--username", "--userid", "--user",
         dest="username",

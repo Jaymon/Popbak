@@ -1,6 +1,6 @@
 # Popbak
 
-Popbak is a Python script that will back up an email account (any email account that supports POP access) into a local folder.
+Popbak is a Python script that will back up an email account (any email account that supports IMAP access) into a local folder.
 
 I wrote this because I like having an archival copy of my email, I don't want an mbox backup or anything like that, I want an easy way to read the email and see the attachments.
 
@@ -9,35 +9,46 @@ I don't think I described what Popbak does very well, so here's an example, let'
     foo@bar.com "this is my title"
     baz@foo.com "there is a jpg and a pdf file in this email"
 
-Now, if you run Popbak, it will backup the emails like this:
+Now, if you run Popbak, it will backup the emails in a folder structure like this:
 
     bakupdir/
-      bar.com/
-        foo@bar.com/
-          this is the title.txt/
-            body 1.txt
-      foo.com/
-        baz@foo.com/
-          there is a jpg and a pdf file in this email/
-            attachment.jpg
-            attachment.pdf
-            body 1.txt
+      <MAILBOX>/
+          bar.com/
+            foo@bar.com/
+              <DATE> - this is the title.txt/
+                body 1.txt
+                headers 1.txt
+                original.txt
+          foo.com/
+            baz@foo.com/
+              <DATE> - there is a jpg and a pdf file in this email/
+                attachment.jpg
+                attachment.pdf
+                body 1.txt
+                headers 1.txt
+                original.txt
 
 
 ## How to run from the command line
 
-    $ python popbak.py -u USERNAME -p PASSWORD -s SERVER -o PORT -d "/path/to/backupdir"
+Backup a mailbox:
 
-To see all options:
+    $ python popbak.py backup -u USERNAME -p PASSWORD -s SERVER -o PORT -d "/path/to/backupdir" <MAILBOX>
+
+See all your mailboxes:
+
+    $ python popbak.py mailboxes -u USERNAME -p PASSWORD -s SERVER -o PORT -d
+
+See everything you can do:
 
     $ python popbak.py --help
 
 
 ### Back up your gmail account
 
-    $ python popbak.py -u example@gmail.com -p PASSWORD -s pop.gmail.com -o 995 -d "/path/to/backupdir"
+    $ python popbak.py backup -u example@gmail.com -p PASSWORD -d "/path/to/backupdir" "[Gmail]/All Mail" "[Gmail]/Sent Mail"
 
-Make sure you have [activated pop access on your gmail account](http://mail.google.com/support/bin/answer.py?answer=13273&topic=12890). You might have to [create an app password for Popbak](https://support.google.com/accounts/answer/185833) in your [Google account security settings](https://myaccount.google.com/).
+Make sure you have [activated IMAP access on your gmail account](https://support.google.com/mail/answer/7126229). You might have to [create an app password for Popbak](https://support.google.com/accounts/answer/185833) in your [Google account security settings](https://myaccount.google.com/).
 
 ## Installation
 
@@ -55,3 +66,9 @@ Then go ahead and run Popbak using Python 3.7+:
 
     $ python popbak.py --help
     
+
+## Troubleshooting
+
+[Make sure you don't backup too much per day](https://support.google.com/mail/answer/7126229):
+
+> To avoid temporarily locking yourself out of your account, make sure you don't exceed 2500 MB per day for IMAP downloads and 500 MB per day for IMAP uploads. If you're setting up a single IMAP account on multiple computers, try taking a break between each setup.
