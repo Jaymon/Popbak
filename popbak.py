@@ -21,7 +21,7 @@ from datatypes import (
 from captain import Command, handle, arg, args
 
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 
 class Mailbox(object):
@@ -110,6 +110,7 @@ class IMAP(object):
         :param password: str, the password for username
         :param **kwargs: dict, any other things you want to pass
         """
+        self.enter_count = 0 # when using context, don't close the connection unless this is 0
         self.connection = None
         try:
             self.connection = imaplib.IMAP4_SSL(host=server, port=port)
@@ -121,6 +122,7 @@ class IMAP(object):
 
     def __enter__(self):
         """Makes this class a context manager so it's easier to cleanup"""
+        self.enter_count = max(self.enter_count + 1, 1)
         return self
 
     def __exit__(self, exception_type, exception_val, trace):
@@ -131,7 +133,9 @@ class IMAP(object):
             being propagated), it should return a true value. Otherwise, the exception
             will be processed normally upon exit from this method.
         """
-        self.close()
+        self.enter_count -= 1
+        if self.enter_count <= 0:
+            self.close()
 
     def close(self):
         """Closes and cleans up the connection"""
@@ -303,8 +307,8 @@ class Backup(Command):
                         self.output.out(
                             "{}. Saving {} - {} - {}",
                             em.id,
+                            em.datetime.strftime("%Y-%m-%d %H:%M:%S"),
                             em.from_addr,
-                            em.datetime.strftime("%Y-%m-%d"),
                             em.subject
                         )
                         em.save(Dirpath(basedir, mb.name), save_original=save_original)
@@ -313,7 +317,7 @@ class Backup(Command):
 
 
         except Exception as e:
-            self.output.err(e)
+            self.output.exception(e)
 
         self.output.out("Last mail_Ids successfully backed up for each mailbox")
         self.output.table(mail_info.items())
