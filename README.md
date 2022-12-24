@@ -18,7 +18,7 @@ Now, if you run Popbak, it will backup the emails in a folder structure like thi
               <DATE> - this is the title.txt/
                 body 1.txt
                 headers 1.txt
-                original.txt
+                original.eml
           foo.com/
             baz@foo.com/
               <DATE> - there is a jpg and a pdf file in this email/
@@ -26,7 +26,7 @@ Now, if you run Popbak, it will backup the emails in a folder structure like thi
                 attachment.pdf
                 body 1.txt
                 headers 1.txt
-                original.txt
+                original.eml
 
 
 ## How to run from the command line
