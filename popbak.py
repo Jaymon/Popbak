@@ -17,7 +17,7 @@ from datatypes import (
     ByteString,
     Dirpath,
 )
-from captain import Command, handle, arg, args
+from captain import Command, application, arg, args
 
 
 __version__ = "0.6.1"
@@ -32,9 +32,9 @@ class Mailbox(object):
     """
     @classmethod
     def imap_name(self, name):
-        """So I would rather have the name be like NAME but IMAP wants the name
-        to be "NAME" (wrapped in double quotes) so this takes the name and wraps
-        it so it can be used when making IMAP requests
+        """So I would rather have the name be like NAME but IMAP wants the
+        name to be "NAME" (wrapped in double quotes) so this takes the name
+        and wraps it so it can be used when making IMAP requests
 
         :param name: str, the mailbox name
         :returns: str, the name in the format IMAP wants it to make a request
@@ -70,8 +70,8 @@ class Mailbox(object):
         return "\\Noselect" not in self.attributes
 
     def ids(self, limit, offset):
-        """Given a limit and/or offset return the ids that should be checked for
-        this mailbox
+        """Given a limit and/or offset return the ids that should be checked
+        for this mailbox
 
         IMAP fetches email by a mail_id, this takes limit and offset and
         generates the list of ids that should be checked
@@ -84,6 +84,7 @@ class Mailbox(object):
 
         if limit > 0:
             stop_id = offset + limit - 1
+
         else:
             stop_id = self.count
 
@@ -131,7 +132,8 @@ class IMAP(object):
         https://docs.python.org/3/reference/datamodel.html#context-managers
             If the method wishes to suppress the exception (i.e., prevent it
             from being propagated), it should return a true value. Otherwise,
-            the exception will be processed normally upon exit from this method.
+            the exception will be processed normally upon exit from
+            this method.
         """
         self.enter_count -= 1
         if self.enter_count <= 0:
@@ -144,8 +146,8 @@ class IMAP(object):
                 self.connection.close()
 
             except imaplib.IMAP4.error as e:
-                # ignore any imap errors since we're trying to close everything
-                # out anyway
+                # ignore any imap errors since we're trying to close
+                # everything out anyway
                 pass
 
             self.connection.logout()
@@ -250,10 +252,9 @@ class Mailboxes(Command):
         group="IMAP Config",
     )
     @arg(
-        "mailboxes",
+        "mailbox_names",
         metavar="MAILBOX",
         nargs="*",
-        dest="mailbox_names",
         help="The mailboxes you would like information on"
     )
     def handle(self, imap_config, mailbox_names):
@@ -286,10 +287,9 @@ class Backup(Command):
         help="the directory to backup to"
     )
     @arg(
-        "mailboxes",
+        "mailbox_names",
         metavar="MAILBOX",
         nargs="+",
-        dest="mailbox_names",
         help="The mailboxes you would like to backup"
     )
     @arg(
@@ -322,7 +322,7 @@ class Backup(Command):
                 imap_config.username,
                 imap_config.password
             )
-            with imap as imap:
+            with imap:
                 for mb in imap.mailboxes(mailbox_names):
                     mail_info[mb.name] = 0
 
@@ -345,10 +345,12 @@ class Backup(Command):
         except Exception as e:
             self.output.exception(e)
 
-        self.output.out("Last mail_Ids successfully backed up for each mailbox")
+        self.output.out(
+            "Last mail_Ids successfully backed up for each mailbox"
+        )
         self.output.table(mail_info.items())
 
 
 if __name__ == "__main__":
-    handle()
+    application()
 
