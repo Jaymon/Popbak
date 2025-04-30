@@ -5,17 +5,19 @@ Popbak makes it easy to back up an IMAP accessible email in box
 import poplib
 import sys
 import time
-import datetime
+#import datetime
 import argparse
 import logging
 from contextlib import contextmanager # https://docs.python.org/3/library/contextlib.html
 import imaplib
+import re
 
 from datatypes import (
     Email,
     String,
     ByteString,
     Dirpath,
+    Datetime,
 )
 from captain import Command, application, arg, args
 
@@ -41,10 +43,12 @@ class Mailbox(object):
         """
         return f"\"{name}\""
 
-    def __init__(self, raw):
+    def __init__(self, imap, raw):
         """
         :param raw: str, string in the form of: ([ATTRIBUTES]) "DELIM" "NAME"
         """
+        self.imap = imap
+
         # via: https://www.rfc-editor.org/rfc/rfc3501#section-7.2.2
         # the list response is: (attributes) "delim" "name"
         raw = String(raw)
@@ -69,18 +73,37 @@ class Mailbox(object):
         """
         return "\\Noselect" not in self.attributes
 
-    def ids(self, limit, offset):
-        """Given a limit and/or offset return the ids that should be checked
-        for this mailbox
+    def select(self, readonly=True):
+        """Select this mailbox so you can read from it
+
+        https://www.rfc-editor.org/rfc/rfc3501#section-6.3.1
+
+        :param readonly: bool, True if you don't want to modify the mailbox
+            but only read from it
+        :returns: Mailbox
+        """
+        if not self.imap.is_selected(self):
+            with self.imap:
+                resp_code, mail_count = self.imap.connection.select(
+                    mailbox=Mailbox.imap_name(self.name),
+                    readonly=readonly
+                )
+                self.count = int(String(mail_count[0]))
+                self.imap.selected_mailbox = self
+
+    def get_ids(self, limit, offset):
+        """Given a limit and/or offset return the get_ids that should be
+        checked for this mailbox
 
         IMAP fetches email by a mail_id, this takes limit and offset and
         generates the list of ids that should be checked
 
         :param limit: int, at most, how many ids should be generated
         :param offset: int, what id should be the start id
-        :returns: generator, all the mail ids between start_id and stop_id
+        :returns: generator[int], all the mail ids between start_id
+            and stop_id
         """
-        start_id = offset or 1
+        start_id = max(offset, 1)
 
         if limit > 0:
             stop_id = offset + limit - 1
@@ -93,6 +116,58 @@ class Mailbox(object):
 
         for mail_id in range(start_id, stop_id + 1):
             yield mail_id
+
+    def find_id_since(self, dt):
+        """Use a binary search to find the first id after the datestamp
+
+        :param dt: Datetime
+        :returns: int
+        """
+        with self.imap:
+            self.select()
+
+            low_id = 1
+            high_id = self.count
+            mid_id = low_id
+
+            while low_id <= high_id:
+                mid_id = (low_id + high_id) // 2
+                em = self.get_email(mid_id)
+
+                #pout.v(em.datetime, dt, low_id, mid_id, high_id)
+
+                if em.datetime > dt:
+                    high_id = mid_id - 1
+
+                else:
+                    low_id = mid_id + 1
+
+            return low_id
+
+    def get_emails(self, limit, offset):
+        """Retrieve emails for the given mailbox
+
+        :param mailbox: Mailbox, see .get_mailboxes()
+        :param limit: int, see Mailbox.get_ids()
+        :param offset: int, see Mailbox.get_ids()
+        :returns: generator[Email]
+        """
+        with self.imap:
+            for mail_id in self.get_ids(limit, offset):
+                yield self.get_email(mail_id)
+
+    def get_email(self, mail_id):
+        with self.imap:
+            self.select()
+
+            resp_code, mail_data = self.imap.connection.fetch(
+                String(mail_id),
+                "(RFC822)"
+            )
+            em = Email(mail_data[0][1], errors="ignore")
+            em.id = mail_id
+            return em
+
 
 
 class IMAP(object):
@@ -113,17 +188,25 @@ class IMAP(object):
         # when using context, don't close the connection unless this is 0
         self.enter_count = 0
         self.connection = None
-        try:
-            self.connection = imaplib.IMAP4_SSL(host=server, port=port)
-            self.connection.login(username, password)
+        self.selected_mailbox = None
 
-        except Exception:
-            self.close()
-            raise
+        self.server = server
+        self.port = port
+        self.username = username
+        self.password = password
+
+#         try:
+#             self.connection = imaplib.IMAP4_SSL(host=server, port=port)
+#             self.connection.login(username, password)
+# 
+#         except Exception:
+#             self.close()
+#             raise
 
     def __enter__(self):
         """Makes this class a context manager so it's easier to cleanup"""
-        self.enter_count = max(self.enter_count + 1, 1)
+        self.connect()
+        self.enter_count += 1
         return self
 
     def __exit__(self, exception_type, exception_val, trace):
@@ -139,6 +222,17 @@ class IMAP(object):
         if self.enter_count <= 0:
             self.close()
 
+    def connect(self):
+        if not self.connection:
+            self.enter_count = 0
+
+            self.connection = imaplib.IMAP4_SSL(
+                host=self.server,
+                port=self.port
+            )
+
+            self.connection.login(self.username, self.password)
+
     def close(self):
         """Closes and cleans up the connection"""
         if self.connection:
@@ -152,9 +246,16 @@ class IMAP(object):
 
             self.connection.logout()
 
+        self.enter_count = 0
         self.connection = None
 
-    def mailboxes(self, mailbox_names=None):
+    def is_selected(self, mailbox):
+        if self.selected_mailbox:
+            return self.selected_mailbox.name == mailbox.name
+
+        return False
+
+    def get_mailboxes(self, mailbox_names=None):
         """Return username's mailboxes on this IMAP server
 
         :param mailbox_names: list, the mailboxes you are searching for
@@ -174,51 +275,68 @@ class IMAP(object):
                 resp_code, mailboxes = self.connection.list()
 
             for mailbox in mailboxes:
-                mb = Mailbox(mailbox)
+                mb = Mailbox(self, mailbox)
                 if mb.is_selectable():
-                    yield self.select(mb)
+                    mb.select()
+                    yield mb
+                    #yield self.select(mb)
 
-    def select(self, mailbox, readonly=True):
-        """Select this mailbox so you can read from it
+#     def select(self, mailbox, readonly=True):
+#         """Select this mailbox so you can read from it
+# 
+#         https://www.rfc-editor.org/rfc/rfc3501#section-6.3.1
+# 
+#         :param mailbox: Mailbox, the mailbox you want to select, this will
+#             update the mailbox instance with .count, representing how many
+#             messages the mailbox has on the server
+#         :param readonly: bool, True if you don't want to modify the mailbox but
+#             only read from it
+#         :returns: Mailbox
+#         """
+#         with self:
+#             resp_code, mail_count = self.connection.select(
+#                 mailbox=Mailbox.imap_name(mailbox.name),
+#                 readonly=readonly
+#             )
+#             mailbox.count = int(String(mail_count[0]))
+#         return mailbox
 
-        https://www.rfc-editor.org/rfc/rfc3501#section-6.3.1
+#     def get_emails(self, mailbox, limit, offset):
+#         """Retrieve emails for the given mailbox
+# 
+#         :param mailbox: Mailbox, see .get_mailboxes()
+#         :param limit: int, see Mailbox.get_ids()
+#         :param offset: int, see Mailbox.get_ids()
+#         :returns: generator<Email>
+#         """
+#         self.select(mailbox)
+# 
+#         with self:
+#             #resp_code, mail_ids = conn.search(None, "ALL")
+#             #pout.v(mail_ids)
+#             for mail_id in mailbox.get_ids(limit, offset):
+#                 resp_code, mail_data = self.connection.fetch(
+#                     String(mail_id),
+#                     "(RFC822)"
+#                 )
+#                 em = Email(mail_data[0][1], errors="ignore")
+#                 em.id = mail_id
+#                 yield em
 
-        :param mailbox: Mailbox, the mailbox you want to select, this will
-            update the mailbox instance with .count, representing how many
-            messages the mailbox has on the server
-        :param readonly: bool, True if you don't want to modify the mailbox but
-            only read from it
-        :returns: Mailbox
-        """
-        with self:
-            resp_code, mail_count = self.connection.select(
-                mailbox=Mailbox.imap_name(mailbox.name),
-                readonly=readonly
-            )
-            mailbox.count = int(String(mail_count[0]))
-        return mailbox
+#     def get_email(self, mailbox, mail_id):
 
-    def emails(self, mailbox, limit, offset):
-        """Retrieve emails for the given mailbox
+#     def find_id(self, mailbox, **kwargs):
+#         self.select(mailbox)
+#         low_id = 1
+#         high_id = mailbox.count
+#         mid_id = (low_id + high_id) // 2
+# 
+#         em = self.get_emails(
+# 
+# 
+#         if datestamp := kwargs.get("datestamp"):
+#             dt = Datetime(datestamp)
 
-        :param mailbox: Mailbox, see .mailboxes()
-        :param limit: int, see Mailbox.ids()
-        :param offset: int, see Mailbox.ids()
-        :returns: generator<Email>
-        """
-        self.select(mailbox)
-
-        with self:
-            #resp_code, mail_ids = conn.search(None, "ALL")
-            #pout.v(mail_ids)
-            for mail_id in mailbox.ids(limit, offset):
-                resp_code, mail_data = self.connection.fetch(
-                    String(mail_id),
-                    "(RFC822)"
-                )
-                em = Email(mail_data[0][1], errors="ignore")
-                em.id = mail_id
-                yield em
 
 
 class Mailboxes(Command):
@@ -264,13 +382,92 @@ class Mailboxes(Command):
             imap_config.username,
             imap_config.password
         )
-        with imap as imap:
-            for mb in self.output.increment(imap.mailboxes(mailbox_names)):
+        with imap:
+            for mb in self.output.increment(imap.get_mailboxes(mailbox_names)):
                 s = "message" if mb.count == 1 else "messages"
                 attrs = " ".join(mb.attributes)
                 self.output.out(
                     f"{mb.name} - {mb.count} {s} - Attributes: {attrs}"
                 )
+
+
+class Sync(Command):
+    """Sync mailboxes to the local filesystem
+
+    Each email will get its own directory with the message bodies and the
+    attachments
+    """
+    def find_dt(self, basedir):
+        dt = None
+        sentinel = basedir.get_file(".popbak")
+        if sentinel.exists():
+            dt = Datetime(sentinel.read_text().strip())
+            self.output.out("Found datetime {} in {}", dt, sentinel)
+
+        else:
+            dt = None
+            for fp in basedir.iterator.pattern("headers.txt"):
+                m = re.search(
+                    r"Date:\s+(\d+-\d+-\d+T\d+:\d+:\d+Z)",
+                    fp.read_text()
+                )
+
+                if m:
+                    mdt = Datetime(m.group(1))
+                    if dt is None or mdt > dt:
+                        dt = mdt
+
+            if dt:
+                self.output.out("Found datetime {} using headers", dt)
+
+        return dt
+
+    @args(Mailboxes)
+    @arg(
+        "-d", "--dir",
+        dest="basedir",
+        #default=datetime.date.today(),
+        default=Datetime.today().date(),
+        help="the directory to backup to"
+    )
+    def handle(self, imap_config, basedir, mailbox_names):
+        imap = IMAP(
+            imap_config.server,
+            imap_config.port,
+            imap_config.username,
+            imap_config.password
+        )
+        with imap:
+            for mb in self.output.increment(imap.get_mailboxes(mailbox_names)):
+                s = "message" if mb.count == 1 else "messages"
+                self.output.out(
+                    f"Syncing {mb.name} with {mb.count} {s}"
+                )
+
+                mb_basedir = Dirpath(basedir, mb.name)
+                offset = 0
+
+                dt = self.find_dt(mb_basedir)
+                if dt:
+                    self.output.out("Mailbox {} last synced {}", mb.name, dt)
+                    offset = mb.find_id_since(dt)
+
+                else:
+                    self.output.out("Mailbox {} is new", mb.name)
+
+#                 for em in mb.get_emails(0, offset):
+                    self.output.out(
+                        "{}/{}. Saving {} - {} - {}",
+                        em.id,
+                        mb.count,
+                        em.datestamp("%Y-%m-%d %H:%M:%S"),
+                        em.from_addr,
+                        em.subject
+                    )
+                    em.save(mb_basedir, save_original=True)
+
+                    fp = mb_basedir.get_file(".popbak")
+                    fp.write_text(str(em.datetime))
 
 
 class Backup(Command):
@@ -283,7 +480,8 @@ class Backup(Command):
     @arg(
         "-d", "--dir",
         dest="basedir",
-        default=datetime.date.today(),
+        #default=datetime.date.today(),
+        default=Datetime.today().date(),
         help="the directory to backup to"
     )
     @arg(
@@ -302,17 +500,33 @@ class Backup(Command):
     @arg(
         "--offset",
         dest="offset",
-        default=1,
+        default=0,
         type=int,
         help="the message id (mail id) you want to start on"
     )
+    @arg(
+        "--since",
+        dest="dt",
+        type=Datetime,
+        help="The ISO8601 datestamp that messages should be after"
+    )
+
     @arg(
         "--discard-originals",
         dest="save_original",
         action="store_false",
         help="Pass this flag in to discard saving the full original message"
     )
-    def handle(self, imap_config, mailbox_names, basedir, limit, offset, save_original):
+    def handle(
+        self,
+        imap_config,
+        mailbox_names,
+        basedir,
+        limit,
+        offset,
+        dt,
+        save_original
+    ):
         mail_info = {}
 
         try:
@@ -323,12 +537,24 @@ class Backup(Command):
                 imap_config.password
             )
             with imap:
-                for mb in imap.mailboxes(mailbox_names):
+                for mb in imap.get_mailboxes(mailbox_names):
                     mail_info[mb.name] = 0
 
-                    self.output.out("Backing up mailbox: {}", mb.name)
+                    if dt:
+                        self.output.out(
+                            "Backing up mailbox: {} from {}",
+                            mb.name,
+                            dt,
+                        )
 
-                    for em in imap.emails(mb, limit, offset):
+                        offset = mb.find_id_since(dt) + offset
+
+                        self.output.out("Starting at offset {}", offset)
+
+                    else:
+                        self.output.out("Backing up mailbox: {}", mb.name)
+
+                    for em in mb.get_emails(limit, offset):
                         self.output.out(
                             "{}. Saving {} - {} - {}",
                             em.id,
