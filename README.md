@@ -31,13 +31,17 @@ Now, if you run Popbak, it will backup the emails in a folder structure like thi
 
 ## How to run from the command line
 
-Backup a mailbox:
-
-    $ python popbak.py backup -u USERNAME -p PASSWORD -s SERVER -o PORT -d "/path/to/backupdir" <MAILBOX>
-
 See all your mailboxes:
 
     $ python popbak.py mailboxes -u USERNAME -p PASSWORD -s SERVER -o PORT -d
+
+Backup a specific mailbox:
+
+    $ python popbak.py backup -u USERNAME -p PASSWORD -s SERVER -o PORT -d "/path/to/backupdir" <MAILBOX>
+
+Sync some mailboxes (good for scheduled/recurring backups):
+
+    $ python popbak.py sync -u USERNAME -p PASSWORD -s SERVER -o PORT -d "/path/to/backupdir" [MAILBOX ...]
 
 See everything you can do:
 
@@ -49,6 +53,7 @@ See everything you can do:
     $ python popbak.py backup -u example@gmail.com -p PASSWORD -d "/path/to/backupdir" "[Gmail]/All Mail" "[Gmail]/Sent Mail"
 
 Make sure you have [activated IMAP access on your gmail account](https://support.google.com/mail/answer/7126229). You might have to [create an app password for Popbak](https://support.google.com/accounts/answer/185833) in your [Google account security settings](https://myaccount.google.com/).
+
 
 ## Installation
 
