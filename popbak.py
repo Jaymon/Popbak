@@ -474,8 +474,9 @@ class Backup(Command):
 
                     for em in mb.get_emails(limit, offset):
                         self.output.out(
-                            "{}. Saving {} - {} - {}",
+                            "{}/{}. Saving {} - {} - {}",
                             em.id,
+                            mb.count,
                             em.datestamp("%Y-%m-%d %H:%M:%S"),
                             em.from_addr,
                             em.subject
