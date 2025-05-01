@@ -2,7 +2,6 @@
 """
 Popbak makes it easy to back up an IMAP accessible email in box
 """
-from contextlib import contextmanager # https://docs.python.org/3/library/contextlib.html
 import imaplib
 import re
 
