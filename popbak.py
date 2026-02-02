@@ -1,7 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Popbak makes it easy to back up an IMAP accessible email in box
-"""
 import imaplib
 import re
 
@@ -11,10 +7,10 @@ from datatypes import (
     Dirpath,
     Datetime,
 )
-from captain import Command, application, arg, args
+from captain import Command, application, Argument
 
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 
 class Mailbox(object):
@@ -268,65 +264,51 @@ class IMAP(object):
                     yield mb
 
 
-class Mailboxes(Command):
-    """Retrieve all username's mailboxes and how many messages those mailboxes
-    contain"""
-    @arg(
+class Default(Command):
+    """
+    Popbak makes it easy to back up an IMAP accessible email inbox
+    """
+    username = Argument(
         "-u", "--username", "--userid", "--user",
         dest="username",
         help="Your email username (eg, username@example.com)",
-        group="IMAP Config",
     )
-    @arg(
+
+    password = Argument(
         "-p", "--password",
         dest="password",
         help="Your email password",
-        group="IMAP Config",
     )
-    @arg(
+
+    server = Argument(
         "-s", "--server", "--host", "--hostname",
         dest="server",
         default="imap.gmail.com",
         help="The server you want to connect to",
-        group="IMAP Config",
     )
-    @arg(
+
+    port = Argument(
         "-o", "--port",
         dest="port",
         default=993,
         type=int,
         help="The port you want to connect to",
-        group="IMAP Config",
     )
-    @arg(
-        "mailbox_names",
-        metavar="MAILBOX",
-        nargs="*",
-        help="The mailboxes you would like information on"
-    )
-    def handle(self, imap_config, mailbox_names):
-        imap = IMAP(
-            imap_config.server,
-            imap_config.port,
-            imap_config.username,
-            imap_config.password
+
+    def _get_imap(self) -> IMAP:
+        """Get an IMAP instance using the class properties that were passed
+        in"""
+        return IMAP(
+            self.server,
+            self.port,
+            self.username,
+            self.password
         )
-        with imap:
-            for mb in self.output.increment(imap.get_mailboxes(mailbox_names)):
-                s = "message" if mb.count == 1 else "messages"
-                attrs = " ".join(mb.attributes)
-                self.output.out(
-                    f"{mb.name} - {mb.count} {s} - Attributes: {attrs}"
-                )
 
-
-class Sync(Command):
-    """Sync mailboxes to the local filesystem
-
-    Each email will get its own directory with the message bodies and the
-    attachments
-    """
-    def find_dt(self, basedir):
+    def _find_dt(self, basedir: str) -> Datetime:
+        """Find the last time `basedir` was synced, either by using the
+        `.popbak` file or by checking all the dates in all the `headers.txt`
+        files"""
         dt = None
         sentinel = basedir.get_file(".popbak")
         if sentinel.exists():
@@ -351,22 +333,63 @@ class Sync(Command):
 
         return dt
 
-    @args(Mailboxes)
-    @arg(
-        "-d", "--dir",
-        dest="basedir",
-        default=Datetime.today().date(),
-        help="the directory to backup to"
-    )
-    def handle(self, imap_config, basedir, mailbox_names):
-        imap = IMAP(
-            imap_config.server,
-            imap_config.port,
-            imap_config.username,
-            imap_config.password
-        )
+    def handle_mailboxes(self, *mailbox_names: str):
+        """Retrieve all username's mailboxes and how many messages those
+        mailboxes contain
+
+        :argument *mailbox_names: The mailboxes you would like information on,
+            if no mailboxes are passed in get information on all mailboxes
+        """
+        imap = self._get_imap()
+        mailboxes = imap.get_mailboxes(mailbox_names)
+        with imap:
+            for mb in self.output.increment(mailboxes):
+                s = "message" if mb.count == 1 else "messages"
+                attrs = " ".join(mb.attributes)
+                self.output.out(
+                    f"{mb.name} - {mb.count} {s} - Attributes: {attrs}"
+                )
+
+    def handle_sync(
+        self,
+        *mailbox_names: str,
+        basedir: str = Datetime.today().date(),
+        blacklist: bool = False,
+    ):
+        """Sync mailboxes to the local filesystem
+
+        Each email will get its own directory with the message bodies and the
+        attachments
+
+        This creates a `.popbak` file in the mailbox folder, if a mailbox
+        doesn't have a `.popbak` file then it will go through all the emails
+        looking for the latest backed up email and start there
+
+        :argument *mailbox_names: one or more mailboxes to backup
+        :keyword basedir: the directory to backup to
+        :keyword blacklist: if passed in then `mailbox_names` becomes a
+            blacklist instead of a whitelist, so all mailboxes will be synced
+            except the names passed in
+        """
+        if blacklist:
+            self.output.warning(
+                "Mailbox names are a blacklist instead of a whitelist",
+            )
+            ignore = set(mailbox_names)
+            mailbox_names = []
+
+        else:
+            ignore = set()
+
+        imap = self._get_imap()
         with imap:
             for mb in self.output.increment(imap.get_mailboxes(mailbox_names)):
+                if mb.name in ignore:
+                    self.output.out(
+                        f"Ignoring {mb.name}"
+                    )
+                    continue
+
                 s = "message" if mb.count == 1 else "messages"
                 self.output.out(
                     f"Syncing {mb.name} with {mb.count} {s}"
@@ -375,7 +398,7 @@ class Sync(Command):
                 mb_basedir = Dirpath(basedir, mb.name)
                 offset = 0
 
-                dt = self.find_dt(mb_basedir)
+                dt = self._find_dt(mb_basedir)
                 if dt:
                     self.output.out("Mailbox {} last synced {}", mb.name, dt)
                     offset = mb.find_id_since(dt)
@@ -397,77 +420,49 @@ class Sync(Command):
                     fp = mb_basedir.get_file(".popbak")
                     fp.write_text(str(em.datetime))
 
-
-class Backup(Command):
-    """Backup mailboxes to the local filesystem
-
-    Each email will get its own directory with the message bodies and the
-    attachments
-    """
-    @args(Sync)
-    @arg(
-        "mailbox_names",
-        metavar="MAILBOX",
-        nargs="+",
-        help="The mailboxes you would like to backup"
-    )
-    @arg(
-        "--limit",
-        dest="limit",
-        default=0,
-        type=int,
-        help="How many messages you want to backup"
-    )
-    @arg(
-        "--offset",
-        dest="offset",
-        default=0,
-        type=int,
-        help="the message id (mail id) you want to start on"
-    )
-    @arg(
-        "--since",
-        dest="dt",
-        type=Datetime,
-        help="The ISO8601 datestamp that messages should be after"
-    )
-    @arg(
-        "--discard-originals",
-        dest="save_original",
-        action="store_false",
-        help="Pass this flag in to discard saving the full original message"
-    )
-    def handle(
+    def handle_backup(
         self,
-        imap_config,
-        mailbox_names,
-        basedir,
-        limit,
-        offset,
-        dt,
-        save_original
+        mailbox_names: list[str],
+        /, *,
+        since: Datetime|None = None,
+        limit: int = 0,
+        offset: int = 0,
+        discard_originals: bool = False,
     ):
+        """Backup specific mailboxes to the local filesystem
+
+        Each email will get its own directory with the message bodies and the
+        attachments
+
+        This is different than sync in that it won't check a cache for when
+        the mailbox was last synced and will just backup the mailbox(es)
+        according to the passed in criteria. This is great for one off
+        backups
+
+        :argument mailbox_names: The mailboxes you would like to backup
+        :keyword since: The ISO8601 datestamp that messages should be after
+        :keyword limit: How many messages you want to backup
+        :keyword offset: The message id (mail id) you want to start on
+        :keyword discard_originals: Pass this flag in to discard saving the
+            full original message
+        """
         mail_info = {}
+        save_original = not discard_originals
 
         try:
-            imap = IMAP(
-                imap_config.server,
-                imap_config.port,
-                imap_config.username,
-                imap_config.password
-            )
+            imap = self._get_imap()
             with imap:
                 for mb in imap.get_mailboxes(mailbox_names):
                     mail_info[mb.name] = 0
 
-                    if dt:
+                    if since:
                         self.output.out(
                             "Backing up mailbox: {} from {}",
                             mb.name,
-                            dt,
+                            since,
                         )
 
-                        offset = mb.find_id_since(dt) + offset
+                        offset = mb.find_id_since(since) + offset
 
                     else:
                         self.output.out("Backing up mailbox: {}", mb.name)

@@ -65,6 +65,8 @@ Clone this repo:
 Install the dependencies:
 
     $ cd <DIRECTORY>
+    $ python -m venv <VIRTUAL-NAME>
+    $ source <VIRTUAL-NAME>/bin/activate
     $ pip install -r requirements.txt
 
 Then go ahead and run Popbak using Python 3.7+:
